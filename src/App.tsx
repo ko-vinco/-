@@ -803,7 +803,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             <span className="font-bold text-white">검단 주차공유 G-Share</span>
             <span className="text-slate-500">|</span>
-            <span>상해 임대차 사기 방지 및 안심탐면</span>
+            <span>상해 임대차 사기 방지 및 안심 안심 인증 등록제 운영</span>
           </div>
           <div className="flex gap-4">
             <button
