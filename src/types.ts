@@ -19,6 +19,8 @@ export interface ParkingSpot {
   createdAt: string;
   totalRatingsCount: number;
   averageRating: number;
+  hostUid?: string;
+  hostEmail?: string;
 }
 
 export interface Booking {
@@ -32,6 +34,8 @@ export interface Booking {
   status: 'active' | 'completed' | 'cancelled';
   reservedAt: string;
   carNumber: string;
+  userId?: string;
+  userEmail?: string;
 }
 
 export type NeighborhoodType = 'all' | '마전동' | '당하동' | '원당동' | '아라동' | '불로동' | '오류동' | '검정동';

@@ -1,10 +1,6 @@
 {
   "name": "Geomdan Parking Share",
   "description": "인천 검단 지역의 빈 주차 공간을 실시간으로 확인하고 서로 공유할 수 있는 커뮤니티형 주차 공유 플랫폼입니다.",
-  "requestFramePermissions": [
-    "camera",
-    "microphone",
-    "geolocation"
-  ],
+  "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

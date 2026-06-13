@@ -15,13 +15,15 @@ service cloud.firestore {
       return data.title is string && data.title.size() <= 100
         && data.neighborhood is string && data.neighborhood.size() <= 50
         && data.address is string && data.address.size() <= 150
-        && data.pricePerHour is int && data.pricePerHour >= 0
+        && (data.pricePerHour is int || data.pricePerHour is float) && data.pricePerHour >= 0
         && data.availableHours is string && data.availableHours.size() <= 100
         && data.type is string && (data.type == 'villa' || data.type == 'apartment' || data.type == 'detached' || data.type == 'commercial' || data.type == 'land')
         && data.description is string && data.description.size() <= 500
         && data.hostPhone is string && data.hostPhone.size() <= 30
         && data.coordinates is map
-        && data.status is string && (data.status == 'available' || data.status == 'reserved');
+        && data.status is string && (data.status == 'available' || data.status == 'reserved')
+        && (!('hostUid' in data) || (data.hostUid is string && data.hostUid.size() <= 128))
+        && (!('hostEmail' in data) || (data.hostEmail is string && data.hostEmail.size() <= 150));
     }
 
     function isValidBooking(data) {
@@ -31,9 +33,11 @@ service cloud.firestore {
         && data.spotAddress is string && data.spotAddress.size() <= 200
         && data.startTime is string && data.startTime.size() <= 100
         && data.endTime is string && data.endTime.size() <= 100
-        && data.totalPrice is int && data.totalPrice >= 0
+        && (data.totalPrice is int || data.totalPrice is float) && data.totalPrice >= 0
         && data.status is string && (data.status == 'active' || data.status == 'completed' || data.status == 'cancelled')
-        && data.carNumber is string && data.carNumber.size() <= 30;
+        && data.carNumber is string && data.carNumber.size() <= 30
+        && (!('userId' in data) || (data.userId is string && data.userId.size() <= 128))
+        && (!('userEmail' in data) || (data.userEmail is string && data.userEmail.size() <= 150));
     }
 
     // Spots Collection (Public Discovery)
@@ -41,7 +45,7 @@ service cloud.firestore {
       allow read: if true;
       allow create: if isValidSpot(request.resource.data) && isValidId(spotId);
       allow update: if isValidSpot(request.resource.data) && isValidId(spotId);
-      allow delete: if false;
+      allow delete: if true;
     }
 
     // Bookings Collection (Public Shared Order ledger)

@@ -9,6 +9,26 @@ import GeomdanMiniMap from './components/GeomdanMiniMap';
 import ParkingSpotCard from './components/ParkingSpotCard';
 import SpotRegistrationModal from './components/SpotRegistrationModal';
 import BookingList from './components/BookingList';
+import MySpotList from './components/MySpotList';
+import {
+  testConnection,
+  listenSpots,
+  listenBookings,
+  addParkingSpot,
+  updateParkingSpotStatus,
+  deleteParkingSpot,
+  addBooking,
+  updateBookingStatus,
+  seedInitialSpots,
+  auth
+} from './firebase';
+import {
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+  GoogleAuthProvider,
+  User
+} from 'firebase/auth';
 import {
   Search,
   Filter,
@@ -146,44 +166,67 @@ export default function App() {
   const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
   const [selectedNeighborhood, setSelectedNeighborhood] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<'explore' | 'bookings'>('explore');
+  const [activeTab, setActiveTab] = useState<'explore' | 'bookings' | 'my-spots'>('explore');
   const [isRegModalOpen, setIsRegModalOpen] = useState(false);
+
+  // Authentication State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Local Storage tracker for spots registered as a guest
+  const [localRegisteredSpotIds, setLocalRegisteredSpotIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('my_registered_spots') || '[]');
+    } catch {
+      return [];
+    }
+  });
   
   // Advanced Filter state
   const [maxPrice, setMaxPrice] = useState<number>(2000);
   const [selectedType, setSelectedType] = useState<string>('all');
   const [requiredFeatures, setRequiredFeatures] = useState<string[]>([]);
 
-  // Load database from localStorage or fallback to standard seed data
+  // Load database from Firestore on snapshot
   useEffect(() => {
-    const savedSpots = localStorage.getItem('geomdan_spots');
-    const savedBookings = localStorage.getItem('geomdan_bookings');
+    testConnection();
 
-    if (savedSpots) {
-      setSpots(JSON.parse(savedSpots));
-    } else {
-      setSpots(DEFAULT_SPOTS);
-      localStorage.setItem('geomdan_spots', JSON.stringify(DEFAULT_SPOTS));
-    }
+    // Start real-time listens
+    const unsubscribeSpots = listenSpots(
+      (realtimeSpots) => {
+        if (realtimeSpots.length === 0) {
+          // If Firestore spots are empty, seed with DEFAULT_SPOTS
+          seedInitialSpots(DEFAULT_SPOTS);
+        } else {
+          setSpots(realtimeSpots);
+        }
+      },
+      (error) => {
+        console.error("Failed to load spots from Firestore:", error);
+      }
+    );
 
-    if (savedBookings) {
-      setBookings(JSON.parse(savedBookings));
-    } else {
-      setBookings([]);
-      localStorage.setItem('geomdan_bookings', JSON.stringify([]));
-    }
+    const unsubscribeBookings = listenBookings(
+      (realtimeBookings) => {
+        setBookings(realtimeBookings);
+      },
+      (error) => {
+        console.error("Failed to load bookings from Firestore:", error);
+      }
+    );
+
+    // Authentication Listener
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setAuthLoading(false);
+    });
+
+    return () => {
+      unsubscribeSpots();
+      unsubscribeBookings();
+      unsubscribeAuth();
+    };
   }, []);
-
-  // Save changes to localStorage helper
-  const saveSpots = (newSpots: ParkingSpot[]) => {
-    setSpots(newSpots);
-    localStorage.setItem('geomdan_spots', JSON.stringify(newSpots));
-  };
-
-  const saveBookings = (newBookings: Booking[]) => {
-    setBookings(newBookings);
-    localStorage.setItem('geomdan_bookings', JSON.stringify(newBookings));
-  };
 
   // Neighborhood selectors (matching visual map)
   const neighborhoods = [
@@ -253,7 +296,7 @@ export default function App() {
   };
 
   // Register a new spot with automatic coordinate placement calculation
-  const handleRegisterSpot = (formData: Omit<ParkingSpot, 'id' | 'createdAt' | 'status' | 'coordinates' | 'totalRatingsCount' | 'averageRating'>) => {
+  const handleRegisterSpot = async (formData: Omit<ParkingSpot, 'id' | 'createdAt' | 'status' | 'coordinates' | 'totalRatingsCount' | 'averageRating'>) => {
     const baseCoords = neighborhoodOffsets[formData.neighborhood] || { x: 250, y: 220 };
     
     // Add minor randomized offset to prevent duplicate overlapping pins in same neighborhood
@@ -271,31 +314,47 @@ export default function App() {
       createdAt: new Date().toISOString(),
       totalRatingsCount: 0,
       averageRating: 5.0,
+      hostUid: currentUser ? currentUser.uid : '',
+      hostEmail: currentUser ? currentUser.email || '' : '',
     };
 
-    const updatedSpots = [newSpot, ...spots];
-    saveSpots(updatedSpots);
-    
-    // Auto focus on the newly added spot!
-    setSelectedSpotId(newSpotId);
-    setSelectedNeighborhood(formData.neighborhood);
-    setActiveTab('explore');
+    try {
+      await addParkingSpot(newSpot);
 
-    // Friendly alert
-    alert(`🎉 [공유등록 성공]\n\n'${formData.title}' 주차장 공유 등록이 정상 처리되었습니다.\n검단이웃들이 즉시 예약을 개시할 수 있습니다.`);
+      // Save to local registered list to keep track of this browser session's items
+      const nextLocalIds = [...localRegisteredSpotIds, newSpotId];
+      setLocalRegisteredSpotIds(nextLocalIds);
+      localStorage.setItem('my_registered_spots', JSON.stringify(nextLocalIds));
+
+      // Auto focus on the newly added spot!
+      setSelectedSpotId(newSpotId);
+      setSelectedNeighborhood(formData.neighborhood);
+      setActiveTab('explore');
+
+      // Friendly alert
+      alert(`🎉 [공유등록 성공]\n\n'${formData.title}' 주차장 공유 등록이 정상 처리되었습니다.\n검단이웃들이 즉시 예약을 개시할 수 있습니다.`);
+    } catch (err) {
+      alert("공유구역 등록에 실패했습니다. 지연 상황을 확인해주세요.");
+    }
   };
 
   // Complete a booking transaction
-  const handleBookSpot = (spotId: string, carNumber: string, hours: number) => {
+  const handleBookSpot = async (spotId: string, carNumber: string, hours: number) => {
     const targetSpot = spots.find((s) => s.id === spotId);
     if (!targetSpot) return;
+
+    // 1. 실시간 중복 예약 방지 정합성 체크
+    if (targetSpot.status !== 'available') {
+      alert("⚠️ [예약 불가] 이미 다른 컴퓨터나 기기에서 먼저 대여 완료(예약)한 주차 구역입니다.\n실시간 동기화에 의해 전광판이 곧 업데이트됩니다.");
+      return;
+    }
 
     // Total fare computation
     const totalFare = targetSpot.pricePerHour * hours;
 
     // Create Booking entity
     const newBooking: Booking = {
-      id: `BK-${Math.floor(100000 + Math.random() * 900000)}`,
+      id: `BK-${Math.floor(100000 + Math.random() * 950000)}`,
       spotId,
       spotTitle: targetSpot.title,
       spotAddress: targetSpot.address,
@@ -305,33 +364,31 @@ export default function App() {
       totalPrice: totalFare,
       status: 'active',
       reservedAt: new Date().toISOString(),
+      userId: currentUser ? currentUser.uid : '',
+      userEmail: currentUser ? currentUser.email || '' : '',
     };
 
-    // Update spot status to reserved
-    const updatedSpots = spots.map((spot) => {
-      if (spot.id === spotId) {
-        return { ...spot, status: 'reserved' as const };
-      }
-      return spot;
-    });
+    try {
+      // First create the booking document
+      await addBooking(newBooking);
+      // Wait for booking initialization then switch status to reserved
+      await updateParkingSpotStatus(spotId, 'reserved');
 
-    const updatedBookings = [newBooking, ...bookings];
+      // UI shift to 예약내역
+      setActiveTab('bookings');
+      setSelectedSpotId(null);
 
-    saveSpots(updatedSpots);
-    saveBookings(updatedBookings);
-    
-    // UI shift to 예약내역
-    setActiveTab('bookings');
-    setSelectedSpotId(null);
-
-    // Dynamic success modal info alert
-    alert(
-      `🚗 [주차장 대여가 확정되었습니다]\n\n📍 위치: ${targetSpot.title}\n💬 연락처: ${targetSpot.hostPhone}\n🚙 차량번호: ${carNumber}\n⏰ 대여시간: ${hours}시간\n💵 이용금액: ${totalFare.toLocaleString()}원\n\n지정된 호스트 공간에 매너 주차를 준수해 주십시오.`
-    );
+      // Dynamic success modal info alert
+      alert(
+        `🚗 [주차장 대여가 확정되었습니다]\n\n📍 위치: ${targetSpot.title}\n💬 연락처: ${targetSpot.hostPhone}\n🚙 차량번호: ${carNumber}\n⏰ 대여시간: ${hours}시간\n💵 이용금액: ${totalFare.toLocaleString()}원\n\n지정된 호스트 공간에 매너 주차를 준수해 주십시오.`
+      );
+    } catch (err) {
+      alert("대여 예약 진행 도중 오류가 발생했습니다.");
+    }
   };
 
   // Cancel reservation and restore spot availability
-  const handleCancelBooking = (bookingId: string) => {
+  const handleCancelBooking = async (bookingId: string) => {
     const targetBooking = bookings.find((b) => b.id === bookingId);
     if (!targetBooking) return;
 
@@ -339,26 +396,60 @@ export default function App() {
       return;
     }
 
-    // Set spot back to available
-    const updatedSpots = spots.map((spot) => {
-      if (spot.id === targetBooking.spotId) {
-        return { ...spot, status: 'available' as const };
-      }
-      return spot;
-    });
+    try {
+      // Set spot back to available
+      await updateParkingSpotStatus(targetBooking.spotId, 'available');
+      // Update booking status
+      await updateBookingStatus(bookingId, 'cancelled');
 
-    // Update booking status
-    const updatedBookings = bookings.map((b) => {
-      if (b.id === bookingId) {
-        return { ...b, status: 'cancelled' as const };
-      }
-      return b;
-    });
+      alert('🚨 예약이 정상적으로 취소되었습니다. 대여 공간은 다시 타 이웃들이 탐색할 수 있도록 개방됩니다.');
+    } catch (err) {
+      alert("예약 취소 오류가 발생했습니다.");
+    }
+  };
 
-    saveSpots(updatedSpots);
-    saveBookings(updatedBookings);
-    
-    alert('🚨 예약이 정상적으로 취소되었습니다. 대여 공간은 다시 타 이웃들이 탐색할 수 있도록 개방됩니다.');
+  // Sign in using Google Auth Pop-up flow
+  const handleSignIn = async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+      alert('🔒 파이어베이스 구글 로그인이 완료되었습니다!');
+    } catch (err) {
+      console.error("Sign in failed:", err);
+      alert('로그인 처리 중 오류가 발생했습니다. 네트워크 환경을 확인해주세요.');
+    }
+  };
+
+  // Sign out from application
+  const handleSignOut = async () => {
+    if (confirm('로그아웃 하시겠습니까?')) {
+      try {
+        await signOut(auth);
+        alert('로그아웃 되었습니다.');
+      } catch (err) {
+        console.error("Sign out failed:", err);
+      }
+    }
+  };
+
+  // Delete/Unregister owned parking spot
+  const handleDeleteSpot = async (spotId: string) => {
+    if (!confirm('정말로 이 주차장 공간의 공유를 영구 중단하고 삭제하시겠습니까? 관련 실시간 정보가 바로 회수됩니다.')) {
+      return;
+    }
+    try {
+      await deleteParkingSpot(spotId);
+      
+      // Update local storage tracking list as well
+      const updatedLocal = localRegisteredSpotIds.filter(id => id !== spotId);
+      setLocalRegisteredSpotIds(updatedLocal);
+      localStorage.setItem('my_registered_spots', JSON.stringify(updatedLocal));
+
+      alert('🗑️ 공유 주차장이 완전히 회수 및 삭제 처리되었습니다.');
+    } catch (err) {
+      console.error("Delete spot failed:", err);
+      alert('삭제 도중 오류가 발생했습니다. 권한을 확인해주세요.');
+    }
   };
 
   const activeReservationsCount = bookings.filter((b) => b.status === 'active').length;
@@ -401,6 +492,47 @@ export default function App() {
               </div>
             </div>
 
+            {/* Google Login / Logout Profile button */}
+            {authLoading ? (
+              <div className="w-7 h-7 rounded-full border-2 border-slate-200 border-t-indigo-600 animate-spin shrink-0"></div>
+            ) : currentUser ? (
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-200/80 p-1 pr-2.5 rounded-xl shrink-0">
+                {currentUser.photoURL ? (
+                  <img
+                    src={currentUser.photoURL}
+                    alt={currentUser.displayName || ''}
+                    referrerPolicy="no-referrer"
+                    className="w-6.5 h-6.5 rounded-lg object-cover shrink-0 select-none ring-1 ring-slate-200"
+                  />
+                ) : (
+                  <div className="w-6.5 h-6.5 rounded-lg bg-indigo-600 text-white flex items-center justify-center font-bold text-xs shrink-0 select-none">
+                    {(currentUser.displayName || currentUser.email || 'U')[0]}
+                  </div>
+                )}
+                <div className="text-left shrink-0">
+                  <span className="block text-[10px] font-black text-slate-800 leading-tight">
+                    {currentUser.displayName || '회원'}
+                  </span>
+                  <button
+                    onClick={handleSignOut}
+                    type="button"
+                    className="text-[9px] font-bold text-indigo-600 hover:text-red-500 hover:underline block leading-none cursor-pointer"
+                  >
+                    로그아웃
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={handleSignIn}
+                type="button"
+                className="cursor-pointer bg-slate-100 hover:bg-slate-200 text-slate-700 px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
+                구글 로그인
+              </button>
+            )}
+
             {/* CTA action button to open registration modal */}
             <button
               onClick={() => setIsRegModalOpen(true)}
@@ -421,7 +553,7 @@ export default function App() {
           {/* Main search and view Toggle switcher */}
           <div className="bg-white border border-slate-150/80 p-5 rounded-3xl space-y-4 shadow-xs">
             {/* Nav tabs (Explore spots or check active bookings) */}
-            <div className="flex bg-slate-100 p-1.5 rounded-2xl gap-1">
+            <div className="flex flex-col sm:flex-row bg-slate-100 p-1.5 rounded-2xl gap-1">
               <button
                 onClick={() => setActiveTab('explore')}
                 className={`flex-1 py-2.5 rounded-xl cursor-pointer text-xs font-bold transition-all text-center flex items-center justify-center gap-1.5 ${
@@ -430,8 +562,8 @@ export default function App() {
                     : 'text-slate-500 hover:text-slate-800'
                 }`}
               >
-                <Compass className="w-4 h-4 text-slate-500" />
-                지도로 맛있는 주차정보
+                <Compass className="w-4 h-4 text-slate-500 animate-spin-slow" />
+                지도로 실시간 탐색
               </button>
               <button
                 onClick={() => setActiveTab('bookings')}
@@ -442,10 +574,27 @@ export default function App() {
                 }`}
               >
                 <History className="w-4 h-4 text-slate-500" />
-                내 대여 및 예약 현황
+                내 대여 예약 현황
                 {activeReservationsCount > 0 && (
-                  <span className="w-5 h-5 rounded-full bg-indigo-600 text-white text-[9px] font-mono font-black flex items-center justify-center animate-bounce">
+                  <span className="w-4.5 h-4.5 rounded-full bg-indigo-600 text-white text-[9px] font-mono font-black flex items-center justify-center animate-bounce">
                     {activeReservationsCount}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('my-spots')}
+                className={`flex-1 py-2.5 rounded-xl cursor-pointer text-xs font-bold transition-all text-center flex items-center justify-center gap-1.5 ${
+                  activeTab === 'my-spots'
+                    ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-150/20'
+                    : 'text-slate-500 hover:text-slate-800 font-medium'
+                }`}
+              >
+                <Car className="w-4 h-4 text-slate-500" />
+                내가 공유한 주차장
+                {spots.filter(s => (currentUser && s.hostUid === currentUser.uid) || localRegisteredSpotIds.includes(s.id)).length > 0 && (
+                  <span className="w-4.5 h-4.5 rounded-full bg-emerald-600 text-white text-[9px] font-mono font-black flex items-center justify-center">
+                    {spots.filter(s => (currentUser && s.hostUid === currentUser.uid) || localRegisteredSpotIds.includes(s.id)).length}
                   </span>
                 )}
               </button>
@@ -617,8 +766,21 @@ export default function App() {
                   </button>
                 </div>
               )
-            ) : (
+            ) : activeTab === 'bookings' ? (
               <BookingList bookings={bookings} onCancelBooking={handleCancelBooking} />
+            ) : (
+              <MySpotList
+                spots={spots}
+                bookings={bookings}
+                currentUser={currentUser}
+                localRegisteredSpotIds={localRegisteredSpotIds}
+                onDeleteSpot={handleDeleteSpot}
+                onSelectSpot={(spot) => {
+                  setSelectedSpotId(spot.id);
+                  setSelectedNeighborhood(spot.neighborhood);
+                  setActiveTab('explore');
+                }}
+              />
             )}
           </div>
         </div>
